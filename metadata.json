@@ -1,0 +1,8 @@
+{
+  "name": "TripQuest",
+  "description": "An AI travel companion that generates adventurous side quests for your road trips and provides intelligent flight tracking and insights.",
+  "requestFramePermissions": ["geolocation", "camera"],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
