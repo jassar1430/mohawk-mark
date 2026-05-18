@@ -554,6 +554,11 @@ export default function App() {
   const [isSearchingFlight, setIsSearchingFlight] = useState(false);
   const [skyTab, setSkyTab] = useState<'live' | 'history' | 'schedule'>('live');
   const [error, setError] = useState<string | null>(null);
+  const [airlabsApiKey, setAirlabsApiKey] = useState<string>(() => localStorage.getItem('tripquest_airlabs_key') || '');
+
+  useEffect(() => {
+    localStorage.setItem('tripquest_airlabs_key', airlabsApiKey);
+  }, [airlabsApiKey]);
 
   // New Flight Tracking States
   const [currentPath, setCurrentPath] = useState<[number, number][]>([]);
@@ -925,7 +930,10 @@ export default function App() {
       const res = await fetch('/api/flight', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ flightNumber: normalizedFlight }),
+        body: JSON.stringify({ 
+          flightNumber: normalizedFlight,
+          airlabsApiKey: airlabsApiKey
+        }),
         signal: controller.signal
       });
       clearTimeout(timeoutId);
@@ -989,27 +997,27 @@ export default function App() {
     }
   };
 
-  // Auto-refresh interval (Optimized for Quota: 5 minutes)
+  // Auto-refresh interval (Optimized for AirLabs: 10 seconds)
   useEffect(() => {
     let interval: NodeJS.Timeout;
-    if (activeTab === 'flight' && flightInfo && !isQuotaExceeded && (flightInfo.data?.flight_status === 'ACTIVE' || flightInfo.data?.flight_status === 'IN-FLIGHT')) {
+    if (activeTab === 'flight' && flightInfo && !isQuotaExceeded) {
       interval = setInterval(() => {
         getFlightInfo(true);
-      }, 300000); // 5 minutes to save quota
+      }, 10000); // 10 seconds as requested
     }
     return () => clearInterval(interval);
-  }, [activeTab, flightInfo, flightNumber, isQuotaExceeded]);
+  }, [activeTab, flightInfo, flightNumber, isQuotaExceeded, airlabsApiKey]);
 
-  // Sub-second Animation Loop (LERP)
+  // High-Frequency Animation Loop (Smooth LERP)
   useEffect(() => {
     let frameId: number;
     const animate = () => {
       if (prevLive && targetLive && flightInfo) {
         const elapsed = Date.now() - lerpStartTime;
-        const duration = 60000; // Match 60s fetch interval
+        const duration = 10000; // Match 10s fetch interval
         const t = Math.min(elapsed / duration, 1);
 
-        // Linear Interpolation for Lat/Lng
+        // Linear Interpolation for Lat/Lng (Enhanced for sub-second feel)
         const lat = prevLive.latitude + (targetLive.latitude - prevLive.latitude) * t;
         const lng = prevLive.longitude + (targetLive.longitude - prevLive.longitude) * t;
         
@@ -1032,19 +1040,16 @@ export default function App() {
           direction: dir
         });
 
-        // Throttle coordinate logging for path: Only add if distance > threshold
-        if (t > 0 && t < 1) {
-          setCurrentPath(prev => {
-            const last = prev[prev.length - 1];
-            if (!last) return [newPos];
-            // Only add if moved significantly (approx 100m)
-            const dist = Math.sqrt(Math.pow(last[0] - lat, 2) + Math.pow(last[1] - lng, 2));
-            if (dist > 0.001) {
-              return [...prev, newPos];
-            }
-            return prev;
-          });
-        }
+        // Physical distance check before appending to path (approx 50m threshold)
+        setCurrentPath(prev => {
+          const last = prev[prev.length - 1];
+          if (!last) return [newPos];
+          const dist = Math.sqrt(Math.pow(last[0] - lat, 2) + Math.pow(last[1] - lng, 2));
+          if (dist > 0.0005) {
+            return [...prev, newPos];
+          }
+          return prev;
+        });
 
         if (t < 1) {
           frameId = requestAnimationFrame(animate);
@@ -1502,16 +1507,10 @@ export default function App() {
                           <div className="absolute top-4 left-4 z-20 flex flex-col gap-2">
                              <div className="bg-black/80 backdrop-blur-md border border-white/10 p-3 rounded-xl flex items-center gap-3">
                                <div className="w-2 h-2 bg-indigo-500 rounded-full animate-pulse" />
-                               <span className="text-[10px] font-mono font-bold uppercase tracking-tighter text-white">{t.radarInterval}</span>
+                               <span className="text-[10px] font-mono font-bold uppercase tracking-tighter text-white">Refresh: 10s</span>
                              </div>
-                             <button 
-                               onClick={() => getFlightInfo(false)}
-                               className="bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-bold uppercase px-4 py-2 rounded-lg shadow-lg flex items-center gap-2 transition-all pointer-events-auto"
-                             >
-                               <Activity className="w-3 h-3" /> {t.manualPing}
-                             </button>
                              <div className="bg-zinc-900/50 p-2 rounded-lg text-[9px] text-zinc-500 max-w-[120px] leading-tight">
-                               ⚠️ {t.quotaWarning}
+                               AirLabs Integration Active
                              </div>
                           </div>
                         </Card>
@@ -1592,6 +1591,20 @@ export default function App() {
                                        <span className="text-zinc-500 uppercase font-bold tracking-tighter text-[9px]">Vert Speed</span>
                                        <span className="font-mono text-white/80 text-xs">
                                          {flightInfo.data.live.speed_vertical || 0} FPM
+                                       </span>
+                                     </div>
+                                   </div>
+                                   <div className="grid grid-cols-2 gap-4">
+                                     <div className="flex flex-col gap-1">
+                                       <span className="text-zinc-500 uppercase font-bold tracking-tighter text-[9px]">ICAO 24-BIT</span>
+                                       <span className="font-mono text-indigo-400 text-xs uppercase">
+                                         {flightInfo.data.aircraft?.icao24 || '--'}
+                                       </span>
+                                     </div>
+                                     <div className="flex flex-col gap-1">
+                                       <span className="text-zinc-500 uppercase font-bold tracking-tighter text-[9px]">Squawk</span>
+                                       <span className="font-mono text-emerald-400 text-xs">
+                                         {flightInfo.data.live?.squawk || '7000'}
                                        </span>
                                      </div>
                                    </div>
@@ -2011,6 +2024,16 @@ export default function App() {
            <Card className="p-6 md:p-8 space-y-6">
              <h3 className="text-lg md:text-xl font-bold border-b border-white/5 pb-4">{t.updateProfile}</h3>
              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
+                <div className="md:col-span-2">
+                  <Input 
+                    label="AirLabs.co API Key" 
+                    placeholder="e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" 
+                    icon={AlertTriangle} 
+                    value={airlabsApiKey} 
+                    onChange={(e) => setAirlabsApiKey(e.target.value)} 
+                  />
+                  <p className="mt-2 text-[9px] text-zinc-500 italic">Your key is stored locally on this device. 10s radar polling active.</p>
+                </div>
                 <Input 
                   label={t.displayName} 
                   placeholder="Stealth Explorer" 

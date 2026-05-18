@@ -137,102 +137,106 @@ app.post('/api/quests', async (req: Request, res: Response) => {
 });
 
 app.post('/api/flight', async (req: Request, res: Response) => {
-  const { flightNumber } = req.body;
+  const { flightNumber, airlabsApiKey } = req.body;
   
-  // PLACEHOLDER FOR API KEY
-  const AVIATIONSTACK_API_KEY = process.env.AVIATIONSTACK_API_KEY || 'YOUR_AVIATIONSTACK_API_KEY';
+  const KEY = airlabsApiKey || process.env.AIRLABS_API_KEY;
 
   if (!flightNumber) {
     return res.status(400).json({ error: 'Flight number is required' });
   }
 
-  try {
-    console.log(`Querying Aviationstack for: ${flightNumber}`);
-    
-    // Primary search: By exact flight IATA
-    let url = `http://api.aviationstack.com/v1/flights?access_key=${AVIATIONSTACK_API_KEY}&flight_iata=${flightNumber}&limit=1`;
-    let response = await fetch(url);
-    let result: any = await response.json();
+  if (!KEY || KEY === 'YOUR_AIRLABS_API_KEY') {
+    return res.status(401).json({ error: 'AirLabs API Key missing. Please provide it in the settings panel.' });
+  }
 
-    // FALLBACK: If no results, try splitting the flight number (e.g., SV211 -> airline SV, flight 211)
-    if ((!result.data || result.data.length === 0) && !result.error) {
-      const match = flightNumber.match(/^([A-Z]{2,3})(\d+)$/);
-      if (match) {
-        const airlineIata = match[1];
-        const num = match[2];
-        console.log(`No exact match for ${flightNumber}. Attempting split search: Airline=${airlineIata}, Number=${num}`);
-        const fallbackUrl = `http://api.aviationstack.com/v1/flights?access_key=${AVIATIONSTACK_API_KEY}&airline_iata=${airlineIata}&flight_number=${num}&limit=1`;
-        response = await fetch(fallbackUrl);
-        result = await response.json();
-      }
-    }
+  try {
+    console.log(`Querying AirLabs for: ${flightNumber}`);
+    
+    // AirLabs search: By flight IATA
+    const url = `https://airlabs.co/api/v9/flights?flight_iata=${flightNumber}&api_key=${KEY}`;
+    const response = await fetch(url);
+    const result: any = await response.json();
 
     if (result.error) {
-      console.error('Aviationstack API Error Object:', result.error);
-      
-      // Specific handling for Quota/Usage limits
-      if (result.error.code === 'usage_limit_reached') {
-        return res.status(429).json({ 
-          error: "Radar System Quota Exceeded (Aviationstack).",
-          details: "Your API key has reached its monthly request limit. Please upgrade your plan or use a different AVIATIONSTACK_API_KEY in the Secrets panel."
-        });
-      }
-
-      return res.status(result.error.code === 'invalid_access_key' ? 401 : 500).json({ 
-        error: `Aviationstack API Error: ${result.error.info || result.error.code}` 
+      console.error('AirLabs API Error:', result.error);
+      return res.status(500).json({ 
+        error: `AirLabs API Error: ${result.error.message || 'Unknown error'}` 
       });
     }
 
-    if (!result.data || result.data.length === 0) {
-      return res.status(404).json({ error: `No active records found for flight ${flightNumber}. Ensure the flight is currently active or scheduled for today.` });
+    const flights = result.response || [];
+    if (flights.length === 0) {
+      return res.status(404).json({ error: `No active records found for flight ${flightNumber}. Note: AirLabs free tier primarily tracks active flights.` });
     }
 
-    const flight = result.data[0];
-    const airline = flight.airline?.name || 'Unknown Airline';
-    const status = (flight.flight_status || 'Unknown').toUpperCase();
+    const flight = flights[0];
     
-    // Extracting times
-    const depTime = flight.departure?.scheduled || 'N/A';
-    const arrTime = flight.arrival?.scheduled || 'N/A';
-    const origin = flight.departure?.airport || flight.departure?.iata || 'N/A';
-    const destination = flight.arrival?.airport || flight.arrival?.iata || 'N/A';
-    
-    // NEW: Extracting extra details for the dashboard
-    const aircraft = flight.aircraft || {};
-    const live = flight.live || null;
-    const departureDetail = flight.departure || {};
-    const arrivalDetail = flight.arrival || {};
+    // Map AirLabs to internal format
+    const mappedData = {
+      airline: {
+        name: flight.airline_name || 'Unknown',
+        iata: flight.airline_iata || '',
+        icao: flight.airline_icao || '',
+      },
+      airline_name: flight.airline_name || 'Unknown',
+      flight_status: 'IN-FLIGHT', // If it's in the /flights endpoint, it's active
+      flight: {
+        number: flight.flight_number || '',
+        iata: flight.flight_iata || '',
+        icao: flight.flight_icao || '',
+      },
+      aircraft: {
+        registration: flight.reg_number || 'N/A',
+        model: flight.aircraft_icao || 'Aircraft', // Model might need another lookup but we use what we have
+        icao24: flight.hex || '',
+      },
+      live: {
+        latitude: flight.lat,
+        longitude: flight.lng,
+        altitude: flight.alt,
+        direction: flight.dir,
+        speed_horizontal: flight.speed,
+        speed_vertical: flight.v_speed,
+        squawk: flight.squawk,
+        is_ground: false
+      },
+      departure: {
+        iata: flight.dep_iata || 'N/A',
+        icao: flight.dep_icao || 'N/A',
+      },
+      arrival: {
+        iata: flight.arr_iata || 'N/A',
+        icao: flight.arr_icao || 'N/A',
+      }
+    };
 
-    const info = `### 🛫 Official Flight Status: ${flightNumber}
+    const info = `### 🛫 Live Flight Intelligence: ${flightNumber}
     
-- **Airline:** ${airline}
-- **Current Status:** ${status}
-- **Aircraft:** ${aircraft.model || 'N/A'} (${aircraft.registration || 'N/A'})
-- **Route:** ${origin} ➔ ${destination}
-- **Scheduled Departure:** ${new Date(depTime).toLocaleString()}
-- **Scheduled Arrival:** ${new Date(arrTime).toLocaleString()}
+- **Airline:** ${mappedData.airline_name}
+- **Status:** ACTIVE TELEMETRY
+- **Aircraft:** ${mappedData.aircraft.model} (${mappedData.aircraft.registration})
+- **Route:** ${mappedData.departure.iata} ➔ ${mappedData.arrival.iata}
+- **Altitude:** ${Math.round((mappedData.live.altitude || 0) * 3.28084).toLocaleString()} FT
+- **Speed:** ${Math.round(mappedData.live.speed_horizontal || 0)} KTS
 
 ---
 **Technical Telemetry:**
-The flight is currently recorded as **${status}**. Departure from ${origin} was handled by ${airline} operations.
+GPS Coordinates: ${mappedData.live.latitude.toFixed(4)}, ${mappedData.live.longitude.toFixed(4)}
+Heading: ${mappedData.live.direction}° | Vertical Speed: ${mappedData.live.speed_vertical || 0} FPM
 
-*Data provided by Official Aviationstack API Infrastructure.*`;
+*Data provided by AirLabs Network Infrastructure.*`;
 
     res.json({ 
       info, 
-      data: {
-        ...flight,
-        airline_name: airline, // For display
-        flight_status: status,
-      },
-      sources: ["https://aviationstack.com/"], 
+      data: mappedData,
+      sources: ["https://airlabs.co/"], 
       isRadar: true,
       fetchedAt: new Date().toISOString()
     });
   } catch (error: any) {
-    console.error('Aviationstack API Error:', error);
+    console.error('AirLabs Integration Error:', error);
     res.status(500).json({ 
-      error: 'Flight tracking system synchronization failed.',
+      error: 'AirLabs telemetry relay failed.',
       details: error.message 
     });
   }
